@@ -1,0 +1,89 @@
+11.  Where are my compute and data?
+
+It's easy to forget about the effect of data latency on our Fabric warehouses.  After all storage and compute have usually been tightly coupled, as in an on-premises SQL Server data warehouse.  However, because Microsoft Fabric is a Software-as-a-Service solution where storage and compute are decoupled, we should stress the co-location, where possible, of both client-to-engine and engine-to-data connections.
+
+When we execute queries, the transfer of the query result sets to the client computer can significantly impact performance, especially with large result sets.  If possible, we should ensure that the client computer is in the same region as the Fabric capacity to minimize network latency.  If that's not possible, be aware that the number of rows in the result set will impact the query duration.  Speaking of the number of rows, we should also keep in mind the that query editor in the Fabric UI returns only the first 10,000 rows of the data set.  If we need more, we should connect to the warehouse using SSMS, aka SQL Server Management Studio, or Azure Data Studio.  Also, SSMS and Azure Data Studio will give us somewhat better performance anyway compared to the Fabric UI due to their TDS binary format communication with the engine.
+
+
+
+12.  Design for performance
+
+You'll want to organize the tables in your data warehouse into what is known as a star-schema design.  This organizes data into primarily two types of tables, fact and dimension tables.  Fact tables contain contain quantitative, or countable, data that are commonly generated in your transactional systems.  For example, sales transaction details, or patient appointments, or as in the image shown here, NY taxi cab trips.
+
+Dimension tables contain descriptive data about different attributes of your data.  For example, the name and address of the customer placing a sales order, the demographics of a particular patient, or dates and location of taxi trips.  These are the attributes that are commonly used to "slice-and-dice" or group your data on.
+
+This design facilitates analytical processing by de-normalizing the data from your highly normalized OLTP systems, ingesting transactional data and enterprise master data into a common, cleansed, and verified data structure that minimizes JOINS at query time, reduces the number of rows read and facilitates aggregations and grouping processing.
+
+You will also find that you have a third category of table called an integration table.  These might be staging tables used to store the raw data that has been ingested via a pipeline from your OLTP systems, or perhaps temporary integration tables used to store the resutls of intermediate steps and calculations as you are transforming your data.
+
+You have a number of different ways to organize your data using different schema names, table prefixes, and multiple warehouses.  I prefer to avoid table prefixes and instead use different schemas to separate my fact and dimension tables, although I will often call these schemas data and lookup rather than fact and dim to be more easily understood by my analysts.  And because Fabric fully supports cross-warehouse querying using a three-part naming convention, I will usually separate out my integration tables into different staging warehouses to keep them separate from the conformed and verified data.
+
+
+
+13.  Pick optimal data types
+
+Analyzing your data to find what data types and ranges can be expected will pay off with performance benefits as well.  Try to use the smallest data type that accomodates your values, such as an INT instead of a BIGINT for a year number column.  You should specify the precision and scale of all decimals, use varchar instead of char for strings, and declare columns as NOT NULL wherever possible.  Also, if your table has been created by a tool rather than a CREATE TABLE script, for example using Pipelines, you'll want to double-check that appropriate data types were created.  Let's run a quick demo of this...
+
+(New Data Pipeline running very slow)
+
+What can I say about length specificiation in the demo?
+
+14.  So let's move on from design configurations to talk about data ingestion best practices...
+
+15.	 Lake-centric and open - with great performance
+Before we talk about best practices for ingestion, it's important to make sure we all understand what we're ingesting into.  In order to meet the promise of a single copy of our data that is open and is not locked in a specific vendor format, we are using the open data format Parquet with a Delta layer in OneLake.  OneLake is backed by ADLS Gen 2 accounts, and as such any tool that can work with ADLS Gen 2 can work with OneLake.
+
+The Parquet format underlying our tables is a columnar storage format that is great for analytical workloads as the engine can skip columns that are not referenced, dramatically reducing IO.  There are also three types of compression techniques applied to the data:  1. Dictionary encoding creates dictionary and reference indexes in the table.  2. Bitpacking uses the least number of bits possible to store all the values.  And 3. Run-Length Encoding, which for consecutive repeating values instead of repeating the value x number of times, just writes the value and the number of times it is repeated.
+
+
+
+
+
+16.  And a twist
+The secret sauce here...  Well, it's not really a secret so let's call it magic sauce instead, is something called V-Ordering.  This is a write-time optimization to the parquet file format based on Verti-Paq technology that applies special sorting and row group distribution on the parquet files.  It sorts the rows in batches as they come in, and is capable of automatically picking columns in a way that yields the most compression.
+
+Parquet files created with V-ordering are from about 15% smaller, up to as much as 70% smaller in specific cases, thus requiring less network, disk, and CPU resources to read them, for increased performance.  Note that these v-ordered files are 100% open source parquet format compliant, so all parquet engines can read them as regular parquet files, but the Power BI and SQL compute engines within Fabric are optimized to read them at performance levels approaching in-memory access.
+
+
+24.  If time permits, let's talk about some common patterns
+
+
+25.  T-SQL Transformation Challenges
+We know that some commonly used T-SQL patterns have not yet been implemented in Fabric Data Warehouse
+
+26.  Temp tables
+
+27.  MERGE statement
+
+28.  Alternative to Identity columns
+
+29.  Considerations for Consumption
+
+Let's discuss a couple of considerations for consuming our data.  I'll start by talking a little bit about Power BI's Direct Lake Mode.
+
+
+
+
+30.  Power BI Direct Lake Diagram
+
+Many of you will have already heard about Direct Lake mode, so I'll just cover the basics really quick to make sure everyone's up to speed.  Direct Lake is a new semantic model capability for analyzing very large data volumes in Power BI by loading parquet-formatted files directly from a data lake without having to query a Lakehouse or Warehouse endpoint, and without having to import or duplicate data into a Power BI model.
+
+The following diagram shows how classic import and DirectQuery modes compare with Direct Lake mode.  In DirectQuery mode, the Power BI engine queries the data at the source, which can be slow but avoids having to copy the data like with import mode. Any changes at the data source are immediately reflected in the query results.
+
+On the other hand, with import mode, performance can be better because the data is cached and optimized for DAX and MDX report queries without having to translate and pass SQL or other types of queries to the data source. However, the Power BI engine must first copy any new data into the model during refresh. Any changes at the source are only picked up with the next model refresh.
+
+Direct Lake mode eliminates the import requirement by loading the data directly from OneLake. Unlike DirectQuery, there is no translation from DAX or MDX to other query languages or query execution on other database systems, yielding performance similar to import mode. Because there's no explicit import process, it's possible to pick up any changes at the data source as they occur, combining the advantages of both DirectQuery and import modes while avoiding their disadvantages. Direct Lake mode can be the ideal choice for analyzing very large models and models with frequent updates at the data source.
+
+Direct Lake also supports row-level security and object-level security so users only see the data they have permission to see.
+
+31.  Fallback to Direct Query mode
+
+Given the great performance that we get from Direct Lake mode, we should be aware about the effect of design decisions that would cause our Power BI reports to fall back to Direct Lake mode.  Our semantic model can only contain data from a single warehouse, or we fall back to DirectQuery mode.
+
+Also, T-SQL views are not supported in Direct Lake mode as the engine is reading straight from the parquet files and could not consider any transformations that are happening in the views.  One effect of this is that using views to handle role-playing dimensions, such as multiple types of dates in a single fact table, will result in fall back to DirectQuery.  To keep our workload in DirectLake mode in this instance we would need to materialize multiple versions of our date table.  Calculated columns and tables are likewise not supported in Direct Lake mode.
+
+We also need to make sure that our relationships between tables are designed correctly to stay in Direct Lake mode.  This means that keys between tables will need to have identical data types, and also that we don't base these relationships on datetime fields.
+
+
+32.
+
